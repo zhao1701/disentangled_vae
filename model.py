@@ -4,17 +4,19 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import math
 import tensorflow as tf
 
 
+# returns a closure to use as initalizer function in tf.get_variable(...)
+# when called by _fc_weight_variable(...)
 def fc_initializer(input_channels, dtype=tf.float32):
   def _initializer(shape, dtype=dtype, partition_info=None):
     d = 1.0 / np.sqrt(input_channels)
     return tf.random_uniform(shape, minval=-d, maxval=d)
   return _initializer
 
-
+# returns a closure to use as initializer function in tf.get_variable(...)
+# when called by _conv2d_weight_variable(...)
 def conv_initializer(kernel_width, kernel_height, input_channels, dtype=tf.float32):
   def _initializer(shape, dtype=dtype, partition_info=None):
     d = 1.0 / np.sqrt(input_channels * kernel_width * kernel_height)
@@ -42,6 +44,7 @@ class VAE(object):
     self._create_loss_optimizer()
 
   def _conv2d_weight_variable(self, weight_shape, name, deconv=False):
+    """Returns variable tensors for weights and biases of convolutional filters"""
     name_w = "W_{0}".format(name)
     name_b = "b_{0}".format(name)
     
@@ -64,6 +67,7 @@ class VAE(object):
 
 
   def _fc_weight_variable(self, weight_shape, name):
+    """Returns variable tensors for weights and biases of a fully connected layer"""
     name_w = "W_{0}".format(name)
     name_b = "b_{0}".format(name)
     
@@ -79,9 +83,13 @@ class VAE(object):
   
   def _get_deconv2d_output_size(self, input_height, input_width, filter_height,
                                 filter_width, row_stride, col_stride, padding_type):
+
+    # normal convolution: out_dim = (input_dim - filter_dim) / dim_stride + 1
+    # transposed convolution: out_dim = (input_dim - 1) * dim_stride + filter_dim
     if padding_type == 'VALID':
       out_height = (input_height - 1) * row_stride + filter_height
       out_width  = (input_width  - 1) * col_stride + filter_width
+    # SAME --> pad with enough 0's so dimensions are same if strides=1
     elif padding_type == 'SAME':
       out_height = input_height * row_stride
       out_width  = input_width * col_stride
@@ -89,11 +97,15 @@ class VAE(object):
   
   
   def _conv2d(self, x, W, stride):
+    """Given inputs x and variable W with initialization,
+    return output tensor of conv layer WITHOUT bias added"""
     return tf.nn.conv2d(x, W, strides=[1, stride, stride, 1],
                         padding='SAME')
   
   
   def _deconv2d(self, x, W, input_width, input_height, stride):
+    """Given inputs x and variable W with initialization,
+    return output tensor of conv_tranpose layer WITHOUT bias added"""
     filter_height = W.get_shape()[0].value
     filter_width  = W.get_shape()[1].value
     out_channel   = W.get_shape()[2].value
@@ -106,15 +118,21 @@ class VAE(object):
                                                            stride,
                                                            'SAME')
     batch_size = tf.shape(x)[0]
+
+    # create a shape tensor (conv2d_tranpose requires output_shape argument)
     output_shape = tf.stack([batch_size, out_height, out_width, out_channel])
     return tf.nn.conv2d_transpose(x, W, output_shape,
                                   strides=[1, stride, stride, 1],
                                   padding='SAME')
 
   def _sample_z(self, z_mean, z_log_sigma_sq):
+    """Reparametrization trick to sample from latent distribution"""
     eps_shape = tf.shape(z_mean)
     eps = tf.random_normal( eps_shape, 0, 1, dtype=tf.float32 )
     # z = mu + sigma * epsilon
+
+    # z_log_sigma_sq comes from how the latent variable is used
+    # in the cost function.
     z = tf.add(z_mean,
                tf.multiply(tf.sqrt(tf.exp(z_log_sigma_sq)), eps))
     return z
@@ -122,16 +140,20 @@ class VAE(object):
   
   def _create_recognition_network(self, x, reuse=False):
     with tf.variable_scope("rec", reuse=reuse) as scope:
+      # Get variables with initializations with which to create convolutional layers
       # [filter_height, filter_width, in_channels, out_channels]
       W_conv1, b_conv1 = self._conv2d_weight_variable([4, 4, 1,  32], "conv1")
       W_conv2, b_conv2 = self._conv2d_weight_variable([4, 4, 32, 32], "conv2")
       W_conv3, b_conv3 = self._conv2d_weight_variable([4, 4, 32, 32], "conv3")
       W_conv4, b_conv4 = self._conv2d_weight_variable([4, 4, 32, 32], "conv4")
+
+      # Get variables with initializations with which to create dense layers
       W_fc1, b_fc1     = self._fc_weight_variable([4*4*32, 256], "fc1")
       W_fc2, b_fc2     = self._fc_weight_variable([256, 256], "fc2")
       W_fc3, b_fc3     = self._fc_weight_variable([256, 10],  "fc3")
       W_fc4, b_fc4     = self._fc_weight_variable([256, 10],  "fc4")
 
+      
       x_reshaped = tf.reshape(x, [-1, 64, 64, 1])
       h_conv1 = tf.nn.relu(self._conv2d(x_reshaped, W_conv1, 2) + b_conv1) # (32, 32)
       h_conv2 = tf.nn.relu(self._conv2d(h_conv1,    W_conv2, 2) + b_conv2) # (16, 16)
