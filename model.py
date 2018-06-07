@@ -150,10 +150,14 @@ class VAE(object):
       # Get variables with initializations with which to create dense layers
       W_fc1, b_fc1     = self._fc_weight_variable([4*4*32, 256], "fc1")
       W_fc2, b_fc2     = self._fc_weight_variable([256, 256], "fc2")
-      W_fc3, b_fc3     = self._fc_weight_variable([256, 10],  "fc3")
-      W_fc4, b_fc4     = self._fc_weight_variable([256, 10],  "fc4")
 
-      
+      # fc3 does NOT feed into fc4
+      # fc3 used to generate z_mean
+      W_fc3, b_fc3     = self._fc_weight_variable([256, 10],  "fc3") # used for z_mean
+      W_fc4, b_fc4     = self._fc_weight_variable([256, 10],  "fc4") # used for z_log_sigma_sq
+
+
+      # create graph and return output tensors of recognition network
       x_reshaped = tf.reshape(x, [-1, 64, 64, 1])
       h_conv1 = tf.nn.relu(self._conv2d(x_reshaped, W_conv1, 2) + b_conv1) # (32, 32)
       h_conv2 = tf.nn.relu(self._conv2d(h_conv1,    W_conv2, 2) + b_conv2) # (16, 16)
@@ -164,14 +168,19 @@ class VAE(object):
       h_fc2 = tf.nn.relu(tf.matmul(h_fc1,        W_fc2) + b_fc2)
       z_mean         = tf.matmul(h_fc2, W_fc3) + b_fc3
       z_log_sigma_sq = tf.matmul(h_fc2, W_fc4) + b_fc4
+
+      # these tensors are sent to _sample_z(...) to sample a realized representation
+      # for generator network
       return (z_mean, z_log_sigma_sq)
 
   
   def _create_generator_network(self, z, reuse=False):
     with tf.variable_scope("gen", reuse=reuse) as scope:
+      # Get variables with initializations with which to create dense layers
       W_fc1, b_fc1 = self._fc_weight_variable([10,  256],    "fc1")
       W_fc2, b_fc2 = self._fc_weight_variable([256, 4*4*32], "fc2")
 
+      # Get variables with initializations with which to create transposed convolutional layers
       # [filter_height, filter_width, output_channels, in_channels]
       W_deconv1, b_deconv1 = self._conv2d_weight_variable([4, 4, 32, 32], "deconv1", deconv=True)
       W_deconv2, b_deconv2 = self._conv2d_weight_variable([4, 4, 32, 32], "deconv2", deconv=True)
@@ -181,6 +190,8 @@ class VAE(object):
       h_fc1 = tf.nn.relu(tf.matmul(z,     W_fc1) + b_fc1)
       h_fc2 = tf.nn.relu(tf.matmul(h_fc1, W_fc2) + b_fc2)
       h_fc2_reshaped = tf.reshape(h_fc2, [-1, 4, 4, 32])
+
+      # last line just includes extra whitespace for formatting purposes
       h_deconv1   = tf.nn.relu(self._deconv2d(h_fc2_reshaped, W_deconv1,  4,  4, 2) + b_deconv1)
       h_deconv2   = tf.nn.relu(self._deconv2d(h_deconv1,      W_deconv2,  8,  8, 2) + b_deconv2)
       h_deconv3   = tf.nn.relu(self._deconv2d(h_deconv2,      W_deconv3, 16, 16, 2) + b_deconv3)
@@ -194,14 +205,19 @@ class VAE(object):
     # tf Graph input
     self.x = tf.placeholder(tf.float32, shape=[None, 4096])
     
+    # outer variable scope in which "rec" and "gen" variable scopes are created
     with tf.variable_scope("vae"):
+
+      # get tensors for latent distribution parameters
       self.z_mean, self.z_log_sigma_sq = self._create_recognition_network(self.x)
 
       # Draw one sample z from Gaussian distribution
       # z = mu + sigma * epsilon
       self.z = self._sample_z(self.z_mean, self.z_log_sigma_sq)
+
+      # using sample, get reconstructed image
       self.x_out_logit = self._create_generator_network(self.z)
-      self.x_out = tf.nn.sigmoid(self.x_out_logit)
+      self.x_out = tf.nn.sigmoid(self.x_out_logit) # squash logits because image is black and white
       
       
   def _create_loss_optimizer(self):
